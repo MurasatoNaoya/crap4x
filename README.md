@@ -1,6 +1,8 @@
 # crap4x
 
-Polyglot CRAP metric analyzer for **Go, Python, and Rust**.
+Polyglot **CRAP** (Change Risk Anti-Pattern) metric analyzer for **Go, Python, and Rust**.
+
+Inspired by Robert C. Martin's [crap4go](https://github.com/unclebob/crap4go) ([@unclebob](https://github.com/unclebob)), generalised to three languages.
 
 **CRAP(f) = cc(f)² · (1 - cov(f))³ + cc(f)**
 
@@ -55,7 +57,7 @@ Go, Python, Rust. Adding a language is a new `LangSpec` (its tree-sitter grammar
 
 ## Attribution
 
-The CRAP metric was introduced by Alberto Savoia and Bob Evans in [*Crap4J*](http://www.crap4j.org/). Robert C. Martin later published implementations for several languages (`crap4go`, `crap4java`, `crap4clj`), which inspired this project.
+The CRAP (Change Risk Anti-Pattern) metric was introduced by Alberto Savoia and Bob Evans (Crap4J). Robert C. Martin ([@unclebob](https://github.com/unclebob)) later published per-language implementations ([crap4go](https://github.com/unclebob/crap4go), [crap4java](https://github.com/unclebob/crap4java), [crap4clj](https://github.com/unclebob/crap4clj)), which directly inspired this project.
 
 crap4x is an independent reimplementation that generalises the metric to Python, Go, and Rust. It shares no code with those projects and is released separately under the MIT License.
 
