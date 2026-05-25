@@ -218,3 +218,59 @@ func vendored(x int) int { return x }
 		}
 	}
 }
+
+// TestRun_NoCoverage_GoProject verifies that Run returns ExitCoverageRequired (2)
+// and prints the Go lcov generation commands when --coverage is absent on a Go
+// project (go.mod present).
+func TestRun_NoCoverage_GoProject(t *testing.T) {
+	dir := t.TempDir()
+	// Create a minimal go.mod so language detection returns Go.
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fixture.go"), []byte(goSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var sb strings.Builder
+	code := Run(Config{
+		Path:         dir,
+		CoverageFile: "", // not provided
+	}, &sb)
+
+	if code != ExitCoverageRequired {
+		t.Errorf("expected exit code %d (ExitCoverageRequired), got %d", ExitCoverageRequired, code)
+	}
+
+	out := sb.String()
+	// Must contain the Go-specific lcov commands from the README table.
+	wantSubstrings := []string{
+		"go test ./... -coverprofile=cover.out",
+		"gcov2lcov -infile=cover.out -outfile=cover.lcov",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestRun_CoverageFileMissing verifies that Run returns exit code 1 and a clear
+// error message when --coverage points to a non-existent file.
+func TestRun_CoverageFileMissing(t *testing.T) {
+	dir, _ := setupProject(t)
+
+	var sb strings.Builder
+	code := Run(Config{
+		Path:         dir,
+		CoverageFile: filepath.Join(dir, "does-not-exist.lcov"),
+	}, &sb)
+
+	if code == 0 {
+		t.Errorf("expected non-zero exit code when coverage file does not exist, got 0")
+	}
+	out := sb.String()
+	if !strings.Contains(out, "does-not-exist.lcov") {
+		t.Errorf("expected error to mention the missing file; got:\n%s", out)
+	}
+}

@@ -3,12 +3,12 @@
 //
 // Usage:
 //
-//	crap4x [path] [flags]
+//	crap4x [path] --coverage <file.lcov> [flags]
 //
 // Flags:
 //
 //	--lang go|python|rust   override language detection (repeatable or comma-separated)
-//	--coverage <file>       path to an lcov coverage file
+//	--coverage <file>       path to an lcov coverage file (required)
 //	--threshold <float>     exit 1 if any function CRAP score exceeds this value
 //	--top <int>             limit output to the top N functions (default 0 = all)
 package main
@@ -16,18 +16,19 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/MurasatoNaoya/crap4x/internal/coverage"
+	"github.com/MurasatoNaoya/crap4x/internal/app"
 	"github.com/MurasatoNaoya/crap4x/internal/crap"
 	"github.com/MurasatoNaoya/crap4x/internal/detect"
-	"github.com/MurasatoNaoya/crap4x/internal/lang"
 )
 
 const version = "0.1.0-dev"
+
+// ExitCoverageRequired is the exit code used when --coverage is not supplied.
+const ExitCoverageRequired = 2
 
 // Config holds the parsed CLI configuration passed to Run.
 type Config struct {
@@ -35,8 +36,8 @@ type Config struct {
 	Path string
 	// Langs overrides language detection when non-empty.
 	Langs []detect.Lang
-	// CoverageFile is the path to an lcov file (may be "").
-	// When empty, functions are computed with zero coverage (CRAP = CC²+CC).
+	// CoverageFile is the path to an lcov file. It is required; when empty
+	// Run prints per-language generation commands and returns ExitCoverageRequired.
 	CoverageFile string
 	// Threshold causes a non-zero exit when any CRAP score exceeds this value.
 	// 0 means the threshold check is disabled.
@@ -74,18 +75,65 @@ func (lf *langsFlag) Set(val string) error {
 	return nil
 }
 
-// skipDirs is the set of directory names that the file walker never descends into.
-var skipDirs = map[string]bool{
-	"vendor":       true,
-	"target":       true,
-	"node_modules": true,
-	".git":         true,
+// detectLangsForPath detects languages in root, returning detected langs (may
+// be empty). Errors from detect.Detect are swallowed; an empty slice is
+// returned so the caller can still print generic hints.
+func detectLangsForPath(root string) []detect.Lang {
+	langs, _ := detect.Detect(root)
+	return langs
+}
+
+// coverageMissingMessage builds the output printed when --coverage is absent.
+// It detects the project language(s) from root and prints the exact lcov
+// generation commands from the README for each detected language.
+func coverageMissingMessage(root string, forced []detect.Lang) string {
+	langs := forced
+	if len(langs) == 0 {
+		langs = detectLangsForPath(root)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("--coverage is required. Generate an lcov report and pass it via --coverage <file>.\n\n")
+
+	if len(langs) == 0 {
+		sb.WriteString("No language detected; commands for all supported languages:\n\n")
+		sb.WriteString("  Go:\n")
+		sb.WriteString("    go test ./... -coverprofile=cover.out\n")
+		sb.WriteString("    gcov2lcov -infile=cover.out -outfile=cover.lcov\n\n")
+		sb.WriteString("  Python:\n")
+		sb.WriteString("    coverage run -m pytest && coverage lcov -o cover.lcov\n\n")
+		sb.WriteString("  Rust:\n")
+		sb.WriteString("    cargo llvm-cov --lcov --output-path cover.lcov\n")
+	} else {
+		sb.WriteString("Detected language(s); run the appropriate command:\n\n")
+		for _, l := range langs {
+			cmd := app.LcovCommand(l)
+			if cmd == "" {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("  %s:\n", l.String()))
+			for _, line := range strings.Split(cmd, "\n") {
+				sb.WriteString(fmt.Sprintf("    %s\n", strings.TrimSpace(line)))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("Then re-run: crap4x --coverage cover.lcov\n")
+	return sb.String()
 }
 
 // Run is the testable orchestration core. It writes output to out and returns
-// the exit code (0 or 1). Separating this from main() allows integration tests
-// to exercise the full pipeline without spawning a subprocess.
-func Run(cfg Config, out *strings.Builder) (int, error) {
+// the exit code (0, 1, or ExitCoverageRequired). Separating this from main()
+// allows integration tests to exercise the full pipeline without spawning a
+// subprocess.
+//
+// Exit codes:
+//
+//	0  success
+//	1  analysis error or threshold exceeded
+//	2  (ExitCoverageRequired) --coverage flag was not supplied
+func Run(cfg Config, out *strings.Builder) int {
 	// 1. Resolve the project path.
 	root := cfg.Path
 	if root == "" {
@@ -93,83 +141,33 @@ func Run(cfg Config, out *strings.Builder) (int, error) {
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return 1, fmt.Errorf("cannot resolve path %q: %w", root, err)
+		out.WriteString(fmt.Sprintf("crap4x: cannot resolve path %q: %v\n", root, err))
+		return 1
 	}
 
-	// 2. Determine languages.
-	langs := cfg.Langs
-	if len(langs) == 0 {
-		detected, err := detect.Detect(absRoot)
-		if err != nil {
-			return 1, fmt.Errorf("language detection failed: %w", err)
-		}
-		langs = detected
-	}
-	if len(langs) == 0 {
-		out.WriteString("no supported languages detected; use --lang to specify one\n")
-		return 0, nil
+	// 2. Guard: --coverage is required.
+	if cfg.CoverageFile == "" {
+		out.WriteString(coverageMissingMessage(absRoot, cfg.Langs))
+		return ExitCoverageRequired
 	}
 
-	// 3. Walk the tree and analyze source files.
-	var funcs []lang.Function
-
-	for _, l := range langs {
-		ext := l.Ext()
-		spec := l.Spec()
-
-		walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				if skipDirs[d.Name()] || strings.HasPrefix(d.Name(), ".") {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if filepath.Ext(path) != ext {
-				return nil
-			}
-
-			src, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("reading %s: %w", path, err)
-			}
-
-			// Use a relative path for display and lcov matching.
-			rel, relErr := filepath.Rel(absRoot, path)
-			if relErr != nil {
-				rel = path
-			}
-
-			found := lang.Analyze(src, rel, spec)
-			funcs = append(funcs, found...)
-			return nil
-		})
-		if walkErr != nil {
-			return 1, fmt.Errorf("walking %s: %w", absRoot, walkErr)
-		}
+	// 3. Run the analysis via app.Analyze.
+	results, err := app.Analyze(app.Options{
+		Path:         absRoot,
+		Langs:        cfg.Langs,
+		CoverageLcov: cfg.CoverageFile,
+		Threshold:    cfg.Threshold,
+		Top:          cfg.Top,
+	})
+	if err != nil {
+		out.WriteString(fmt.Sprintf("crap4x: %v\n", err))
+		return 1
 	}
 
-	// 4. Parse coverage (optional — nil map means zero coverage).
-	var cov map[string]map[int]int
-	if cfg.CoverageFile != "" {
-		f, err := os.Open(cfg.CoverageFile)
-		if err != nil {
-			return 1, fmt.Errorf("opening coverage file %q: %w", cfg.CoverageFile, err)
-		}
-		defer f.Close()
-		cov, err = coverage.Parse(f)
-		if err != nil {
-			return 1, fmt.Errorf("parsing coverage: %w", err)
-		}
-	}
-
-	// 5. Compute CRAP scores and print report.
-	results := crap.Compute(funcs, cov)
+	// 6. Print report.
 	out.WriteString(crap.Report(results, cfg.Top))
 
-	// 6. Threshold check.
+	// 7. Threshold check.
 	if cfg.Threshold > 0 {
 		flagged := crap.AboveThreshold(results, cfg.Threshold)
 		if len(flagged) > 0 {
@@ -177,30 +175,34 @@ func Run(cfg Config, out *strings.Builder) (int, error) {
 				"\n%d function(s) exceed CRAP threshold %.1f\n",
 				len(flagged), cfg.Threshold,
 			))
-			return 1, nil
+			return 1
 		}
 	}
 
-	return 0, nil
+	return 0
 }
 
 func main() {
 	var langFlag langsFlag
 	flag.Var(&langFlag, "lang", "language override (go|python|rust); repeatable or comma-separated")
 
-	coverageFile := flag.String("coverage", "", "path to lcov coverage file (generate per-language commands with --help)")
+	coverageFile := flag.String("coverage", "", "path to lcov coverage file (required; see README for generation commands)")
 	threshold := flag.Float64("threshold", 0, "exit 1 when any CRAP score exceeds this value (0 = off)")
 	top := flag.Int("top", 0, "limit output to top N functions (0 = all)")
 	versionFlag := flag.Bool("version", false, "print version and exit")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: crap4x [path] [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: crap4x [path] --coverage <file.lcov> [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Compute CRAP scores for functions in a Go, Python, or Rust project.\n")
 		fmt.Fprintf(os.Stderr, "Version: %s\n\n", version)
-		fmt.Fprintf(os.Stderr, "Generate coverage (then pass via --coverage):\n")
-		fmt.Fprintf(os.Stderr, "  Go:     go test ./... -coverprofile=cover.out  (convert with gcov2lcov)\n")
-		fmt.Fprintf(os.Stderr, "  Python: coverage run -m pytest && coverage lcov -o coverage.lcov\n")
-		fmt.Fprintf(os.Stderr, "  Rust:   cargo llvm-cov --lcov --output-path coverage.lcov\n\n")
+		fmt.Fprintf(os.Stderr, "--coverage is required. Generate an lcov file first:\n\n")
+		fmt.Fprintf(os.Stderr, "  Go:\n")
+		fmt.Fprintf(os.Stderr, "    go test ./... -coverprofile=cover.out\n")
+		fmt.Fprintf(os.Stderr, "    gcov2lcov -infile=cover.out -outfile=cover.lcov\n\n")
+		fmt.Fprintf(os.Stderr, "  Python:\n")
+		fmt.Fprintf(os.Stderr, "    coverage run -m pytest && coverage lcov -o cover.lcov\n\n")
+		fmt.Fprintf(os.Stderr, "  Rust:\n")
+		fmt.Fprintf(os.Stderr, "    cargo llvm-cov --lcov --output-path cover.lcov\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -226,11 +228,7 @@ func main() {
 	}
 
 	var sb strings.Builder
-	code, err := Run(cfg, &sb)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "crap4x: %v\n", err)
-		os.Exit(1)
-	}
+	code := Run(cfg, &sb)
 	fmt.Print(sb.String())
 	os.Exit(code)
 }

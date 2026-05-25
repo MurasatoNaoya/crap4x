@@ -144,28 +144,41 @@ func Analyze(opts Options) ([]crap.Result, error) {
 	return crap.Compute(funcs, cov), nil
 }
 
+// LcovCommand returns the exact lcov-generation command(s) for the given
+// language, as documented in the README "Producing an lcov report" table.
+// For Go the two steps are returned joined by a newline. For languages that
+// are not recognised an empty string is returned.
+func LcovCommand(l detect.Lang) string {
+	switch l {
+	case detect.Go:
+		return "go test ./... -coverprofile=cover.out\n  gcov2lcov -infile=cover.out -outfile=cover.lcov"
+	case detect.Python:
+		return "coverage run -m pytest && coverage lcov -o cover.lcov"
+	case detect.Rust:
+		return "cargo llvm-cov --lcov --output-path cover.lcov"
+	default:
+		return ""
+	}
+}
+
 // noCoverageError constructs a helpful error when --coverage is not supplied.
 func noCoverageError(langs []detect.Lang, root string) error {
 	var sb strings.Builder
 	sb.WriteString("--coverage <lcov> is required; generate one with:\n")
-	for _, l := range langs {
-		sb.WriteString(fmt.Sprintf("  %s\n", coverageHint(l, root)))
+	if len(langs) == 0 {
+		sb.WriteString("  go test ./... -coverprofile=cover.out\n")
+		sb.WriteString("    gcov2lcov -infile=cover.out -outfile=cover.lcov\n")
+		sb.WriteString("  coverage run -m pytest && coverage lcov -o cover.lcov\n")
+		sb.WriteString("  cargo llvm-cov --lcov --output-path cover.lcov\n")
+	} else {
+		for _, l := range langs {
+			cmd := LcovCommand(l)
+			if cmd != "" {
+				sb.WriteString(fmt.Sprintf("  %s\n", cmd))
+			}
+		}
 	}
 	sb.WriteString("\nthen pass the resulting lcov file via --coverage")
+	_ = root
 	return fmt.Errorf("%s", sb.String())
-}
-
-// coverageHint returns a human-readable command suggestion for generating lcov
-// output for language l. It does not shell-out; it is documentation only.
-func coverageHint(l detect.Lang, _ string) string {
-	switch l {
-	case detect.Go:
-		return "go test ./... -coverprofile=cover.out  (then convert with gcov2lcov)"
-	case detect.Python:
-		return "coverage run -m pytest && coverage lcov -o coverage.lcov"
-	case detect.Rust:
-		return "cargo llvm-cov --lcov --output-path coverage.lcov"
-	default:
-		return "see per-language documentation"
-	}
 }
