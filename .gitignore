@@ -1,0 +1,5 @@
+/crap4x
+/target/
+*.lcov
+coverage.out
+.DS_Store
