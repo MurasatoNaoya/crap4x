@@ -21,7 +21,7 @@ crap4x [path] --coverage cover.lcov [--lang go,python,rust] [--threshold 30] [--
 ```
 
 - `path` defaults to `.`. crap4x detects languages from project markers (`go.mod`, `Cargo.toml`, `pyproject.toml`/`setup.py`/`requirements.txt`); override with `--lang`.
-- `--coverage` is an lcov file (see below). Without it, every function is scored at 0 coverage.
+- `--coverage` is an lcov file (see below). It is required; without it crap4x exits and prints the command to generate one for your language.
 - `--threshold N` flags functions with CRAP above `N` and exits non-zero, for use in CI.
 - `--top N` limits the table to the worst `N` functions.
 
