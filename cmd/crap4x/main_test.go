@@ -321,6 +321,76 @@ func TestRun_TopLimitViaCfg(t *testing.T) {
 	}
 }
 
+// TestParseFlags_IncludeTests verifies that --include-tests is parsed correctly.
+func TestParseFlags_IncludeTests(t *testing.T) {
+	// Default: flag absent, IncludeTests must be false.
+	cfgDefault, err := parseFlags([]string{"--coverage", "cover.lcov"})
+	if err != nil {
+		t.Fatalf("parseFlags (default) error: %v", err)
+	}
+	if cfgDefault.IncludeTests {
+		t.Error("IncludeTests should be false when --include-tests is not supplied")
+	}
+
+	// With flag: IncludeTests must be true.
+	cfgWith, err := parseFlags([]string{"--coverage", "cover.lcov", "--include-tests"})
+	if err != nil {
+		t.Fatalf("parseFlags (--include-tests) error: %v", err)
+	}
+	if !cfgWith.IncludeTests {
+		t.Error("IncludeTests should be true when --include-tests is supplied")
+	}
+}
+
+// TestIntegration_ExcludesTestFiles verifies that Run excludes test files by
+// default and includes them when IncludeTests is set.
+func TestIntegration_ExcludesTestFiles(t *testing.T) {
+	dir, lcovPath := setupProject(t)
+
+	// Add a _test.go file with one extra function.
+	const testSource = `package fixture
+
+import "testing"
+
+func TestSimple(t *testing.T) {
+	if simple(1) != 2 {
+		t.Fatal("bad")
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "fixture_test.go"), []byte(testSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default (exclude tests): TestSimple must not appear.
+	var sbExclude strings.Builder
+	codeExclude := Run(Config{
+		Path:         dir,
+		CoverageFile: lcovPath,
+		// IncludeTests defaults to false.
+	}, &sbExclude)
+	if codeExclude != 0 {
+		t.Fatalf("Run (exclude tests) returned code %d; output:\n%s", codeExclude, sbExclude.String())
+	}
+	if strings.Contains(sbExclude.String(), "TestSimple") {
+		t.Errorf("default mode: TestSimple must not appear in output; got:\n%s", sbExclude.String())
+	}
+
+	// IncludeTests = true: TestSimple must appear.
+	var sbInclude strings.Builder
+	codeInclude := Run(Config{
+		Path:         dir,
+		CoverageFile: lcovPath,
+		IncludeTests: true,
+	}, &sbInclude)
+	if codeInclude != 0 {
+		t.Fatalf("Run (include tests) returned code %d; output:\n%s", codeInclude, sbInclude.String())
+	}
+	if !strings.Contains(sbInclude.String(), "TestSimple") {
+		t.Errorf("IncludeTests=true: TestSimple must appear in output; got:\n%s", sbInclude.String())
+	}
+}
+
 // TestRun_CoverageFileMissing verifies that Run returns exit code 1 and a clear
 // error message when --coverage points to a non-existent file.
 func TestRun_CoverageFileMissing(t *testing.T) {

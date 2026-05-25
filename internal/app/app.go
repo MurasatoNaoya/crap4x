@@ -39,6 +39,10 @@ type Options struct {
 
 	// Top limits the rows rendered by crap.Report. 0 means all rows.
 	Top int
+
+	// IncludeTests, when true, includes test files in the analysis. By default
+	// (false) test files are skipped so they do not pollute the CRAP report.
+	IncludeTests bool
 }
 
 // skipDirs is the set of directory names that the file walker never descends into.
@@ -79,11 +83,12 @@ func Analyze(opts Options) ([]crap.Result, error) {
 	// Build extension→spec map.
 	type langEntry struct {
 		ext  string
+		lang detect.Lang
 		spec lang.LangSpec
 	}
 	entries := make([]langEntry, 0, len(langs))
 	for _, l := range langs {
-		entries = append(entries, langEntry{ext: l.Ext(), spec: l.Spec()})
+		entries = append(entries, langEntry{ext: l.Ext(), lang: l, spec: l.Spec()})
 	}
 
 	// Walk source files.
@@ -103,16 +108,20 @@ func Analyze(opts Options) ([]crap.Result, error) {
 		ext := filepath.Ext(name)
 		for _, entry := range entries {
 			if ext == entry.ext {
+				// Use a path relative to root so it can match lcov SF: paths.
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					rel = path
+				}
+				// Skip test files unless the caller opted in.
+				if !opts.IncludeTests && isTestFile(rel, entry.lang) {
+					break
+				}
 				src, readErr := os.ReadFile(path)
 				if readErr != nil {
 					// Log and continue; a single unreadable file should not abort the run.
 					fmt.Fprintf(os.Stderr, "warning: skipping %s: %v\n", path, readErr)
 					continue
-				}
-				// Use a path relative to root so it can match lcov SF: paths.
-				rel, relErr := filepath.Rel(root, path)
-				if relErr != nil {
-					rel = path
 				}
 				fileFuncs := lang.Analyze(src, rel, entry.spec)
 				funcs = append(funcs, fileFuncs...)

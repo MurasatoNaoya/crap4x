@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"math"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -112,6 +113,93 @@ func TestAnalyze_NoCoverage(t *testing.T) {
 	errStr := err.Error()
 	if len(errStr) < 10 {
 		t.Errorf("error message looks too short: %q", errStr)
+	}
+}
+
+// TestAnalyze_ExcludesTestFiles verifies that by default test files are not
+// scored, and that IncludeTests=true restores the previous behaviour.
+func TestAnalyze_ExcludesTestFiles(t *testing.T) {
+	// Build a temp dir with a production file, a test file, and an lcov.
+	dir := t.TempDir()
+
+	const prodSource = `package mypkg
+
+func Prod(x int) int {
+	return x + 1
+}
+`
+	const testSource = `package mypkg
+
+import "testing"
+
+func TestProd(t *testing.T) {
+	if Prod(1) != 2 {
+		t.Fatal("bad")
+	}
+}
+`
+	// lcov covers both functions (prod on line 4, TestProd on line 6).
+	const lcovSrc = `SF:prod.go
+DA:4,1
+end_of_record
+SF:prod_test.go
+DA:6,1
+end_of_record
+`
+	writeFile := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile("prod.go", prodSource)
+	writeFile("prod_test.go", testSource)
+	lcovPath := filepath.Join(dir, "cov.lcov")
+	writeFile("cov.lcov", lcovSrc)
+
+	// Default: IncludeTests = false. TestProd must not appear.
+	results, err := app.Analyze(app.Options{
+		Path:         dir,
+		Langs:        []detect.Lang{detect.Go},
+		CoverageLcov: lcovPath,
+		// IncludeTests defaults to false.
+	})
+	if err != nil {
+		t.Fatalf("Analyze (exclude tests) error: %v", err)
+	}
+	for _, r := range results {
+		if r.Func.Name == "TestProd" {
+			t.Errorf("default mode: TestProd must not appear in results, got: %v", r)
+		}
+	}
+	foundProd := false
+	for _, r := range results {
+		if r.Func.Name == "Prod" {
+			foundProd = true
+		}
+	}
+	if !foundProd {
+		t.Error("default mode: Prod (production function) must appear in results")
+	}
+
+	// IncludeTests = true: TestProd must appear.
+	resultsWithTests, err := app.Analyze(app.Options{
+		Path:         dir,
+		Langs:        []detect.Lang{detect.Go},
+		CoverageLcov: lcovPath,
+		IncludeTests: true,
+	})
+	if err != nil {
+		t.Fatalf("Analyze (include tests) error: %v", err)
+	}
+	foundTest := false
+	for _, r := range resultsWithTests {
+		if r.Func.Name == "TestProd" {
+			foundTest = true
+		}
+	}
+	if !foundTest {
+		t.Error("IncludeTests=true: TestProd must appear in results")
 	}
 }
 

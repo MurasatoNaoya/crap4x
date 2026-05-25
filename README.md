@@ -26,6 +26,7 @@ crap4x [path] --coverage cover.lcov [--lang go,python,rust] [--threshold 30] [--
 - `--coverage` is an lcov file (see below). It is required; without it crap4x exits and prints the command to generate one for your language.
 - `--threshold N` flags functions with CRAP above `N` and exits non-zero, for use in CI.
 - `--top N` limits the table to the worst `N` functions.
+- Test files are skipped by default (Go: `_test.go`; Python: `test_*.py`, `*_test.py`, `conftest.py`, or under a `tests/`/`test/` directory; Rust: under a `tests/` directory). Pass `--include-tests` to include them.
 
 ## Producing an lcov report
 

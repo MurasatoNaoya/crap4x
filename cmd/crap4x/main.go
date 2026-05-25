@@ -45,6 +45,8 @@ type Config struct {
 	Threshold float64
 	// Top limits the report to the top N functions (0 means all).
 	Top int
+	// IncludeTests, when true, includes test files in the analysis. Default false.
+	IncludeTests bool
 }
 
 // langsFlag implements flag.Value for a repeatable/comma-separated --lang flag.
@@ -159,6 +161,7 @@ func Run(cfg Config, out *strings.Builder) int {
 		CoverageLcov: cfg.CoverageFile,
 		Threshold:    cfg.Threshold,
 		Top:          cfg.Top,
+		IncludeTests: cfg.IncludeTests,
 	})
 	if err != nil {
 		out.WriteString(fmt.Sprintf("crap4x: %v\n", err))
@@ -204,6 +207,7 @@ func parseFlags(args []string) (Config, error) {
 	coverageFile := fs.String("coverage", "", "path to lcov coverage file")
 	threshold := fs.Float64("threshold", 0, "exit 1 when any CRAP score exceeds this value (0 = off)")
 	top := fs.Int("top", 0, "limit output to top N functions (0 = all)")
+	includeTests := fs.Bool("include-tests", false, "include test files in the analysis (excluded by default)")
 	// --version is handled in main(); parseFlags just captures it.
 	fs.Bool("version", false, "print version and exit")
 
@@ -233,6 +237,7 @@ func parseFlags(args []string) (Config, error) {
 		CoverageFile: *coverageFile,
 		Threshold:    *threshold,
 		Top:          *top,
+		IncludeTests: *includeTests,
 	}, nil
 }
 
@@ -256,6 +261,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  --lang <lang>       language override (go|python|rust); repeatable\n")
 		fmt.Fprintf(os.Stderr, "  --threshold <float> exit 1 when any CRAP score exceeds this value\n")
 		fmt.Fprintf(os.Stderr, "  --top <int>         limit output to top N functions (0 = all)\n")
+		fmt.Fprintf(os.Stderr, "  --include-tests     include test files in the analysis (excluded by default)\n")
 		fmt.Fprintf(os.Stderr, "  --version           print version and exit\n")
 		os.Exit(2)
 	}
