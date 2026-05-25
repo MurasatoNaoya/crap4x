@@ -16,6 +16,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,49 +183,81 @@ func Run(cfg Config, out *strings.Builder) int {
 	return 0
 }
 
-func main() {
+// parseFlags parses the given argument list (without the program name) into a
+// Config. Unlike the standard flag.Parse, it allows the positional path
+// argument to appear anywhere among the named flags — before, after, or
+// interspersed. This is necessary because the Go flag package stops parsing at
+// the first non-flag token, so `crap4x /path --coverage file` would leave
+// --coverage unparsed with a naive flag.Parse() call.
+//
+// Implementation: iterative parsing via flag.FlagSet.Parse. Each call to
+// Parse consumes flags until it hits a non-flag argument; that first non-flag
+// token is treated as the positional path and the remaining args are passed
+// back to Parse, repeating until all tokens are consumed.
+func parseFlags(args []string) (Config, error) {
+	fs := flag.NewFlagSet("crap4x", flag.ContinueOnError)
+	// Suppress the default usage output; main() sets its own.
+	fs.SetOutput(io.Discard)
+
 	var langFlag langsFlag
-	flag.Var(&langFlag, "lang", "language override (go|python|rust); repeatable or comma-separated")
+	fs.Var(&langFlag, "lang", "language override (go|python|rust); repeatable or comma-separated")
+	coverageFile := fs.String("coverage", "", "path to lcov coverage file")
+	threshold := fs.Float64("threshold", 0, "exit 1 when any CRAP score exceeds this value (0 = off)")
+	top := fs.Int("top", 0, "limit output to top N functions (0 = all)")
+	// --version is handled in main(); parseFlags just captures it.
+	fs.Bool("version", false, "print version and exit")
 
-	coverageFile := flag.String("coverage", "", "path to lcov coverage file (required; see README for generation commands)")
-	threshold := flag.Float64("threshold", 0, "exit 1 when any CRAP score exceeds this value (0 = off)")
-	top := flag.Int("top", 0, "limit output to top N functions (0 = all)")
-	versionFlag := flag.Bool("version", false, "print version and exit")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: crap4x [path] --coverage <file.lcov> [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Compute CRAP scores for functions in a Go, Python, or Rust project.\n")
-		fmt.Fprintf(os.Stderr, "Version: %s\n\n", version)
-		fmt.Fprintf(os.Stderr, "--coverage is required. Generate an lcov file first:\n\n")
-		fmt.Fprintf(os.Stderr, "  Go:\n")
-		fmt.Fprintf(os.Stderr, "    go test ./... -coverprofile=cover.out\n")
-		fmt.Fprintf(os.Stderr, "    gcov2lcov -infile=cover.out -outfile=cover.lcov\n\n")
-		fmt.Fprintf(os.Stderr, "  Python:\n")
-		fmt.Fprintf(os.Stderr, "    coverage run -m pytest && coverage lcov -o cover.lcov\n\n")
-		fmt.Fprintf(os.Stderr, "  Rust:\n")
-		fmt.Fprintf(os.Stderr, "    cargo llvm-cov --lcov --output-path cover.lcov\n\n")
-		fmt.Fprintf(os.Stderr, "Flags:\n")
-		flag.PrintDefaults()
-	}
-
-	flag.Parse()
-
-	if *versionFlag {
-		fmt.Printf("crap4x %s\n", version)
-		os.Exit(0)
+	var positionals []string
+	remaining := args
+	for len(remaining) > 0 {
+		if err := fs.Parse(remaining); err != nil {
+			return Config{}, err
+		}
+		after := fs.Args()
+		if len(after) == 0 {
+			break
+		}
+		// The first element of after is a non-flag (positional) argument.
+		positionals = append(positionals, after[0])
+		remaining = after[1:]
 	}
 
 	path := "."
-	if flag.NArg() > 0 {
-		path = flag.Arg(0)
+	if len(positionals) > 0 {
+		path = positionals[0]
 	}
 
-	cfg := Config{
+	return Config{
 		Path:         path,
 		Langs:        langFlag,
 		CoverageFile: *coverageFile,
 		Threshold:    *threshold,
 		Top:          *top,
+	}, nil
+}
+
+func main() {
+	// Check for --version before full flag parsing (it's a special case).
+	for _, arg := range os.Args[1:] {
+		if arg == "--version" || arg == "-version" {
+			fmt.Printf("crap4x %s\n", version)
+			os.Exit(0)
+		}
+	}
+
+	cfg, err := parseFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crap4x: %v\n\n", err)
+		fmt.Fprintf(os.Stderr, "Usage: crap4x [path] --coverage <file.lcov> [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Compute CRAP scores for functions in a Go, Python, or Rust project.\n")
+		fmt.Fprintf(os.Stderr, "Version: %s\n\n", version)
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		fmt.Fprintf(os.Stderr, "  --coverage <file>   path to lcov coverage file (required)\n")
+		fmt.Fprintf(os.Stderr, "  --lang <lang>       language override (go|python|rust); repeatable\n")
+		fmt.Fprintf(os.Stderr, "  --threshold <float> exit 1 when any CRAP score exceeds this value\n")
+		fmt.Fprintf(os.Stderr, "  --top <int>         limit output to top N functions (0 = all)\n")
+		fmt.Fprintf(os.Stderr, "  --version           print version and exit\n")
+		os.Exit(2)
 	}
 
 	var sb strings.Builder

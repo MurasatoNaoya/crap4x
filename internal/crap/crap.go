@@ -245,8 +245,16 @@ func findCoverage(file string, cov map[string]map[int]int) map[int]int {
 	return baseMatch // nil if nothing matched
 }
 
-// hasSuffixPath reports whether longer ends with "/" + shorter, meaning shorter
-// is a path suffix of longer (e.g. longer="/abs/pkg/foo.go", shorter="pkg/foo.go").
+// hasSuffixPath reports whether longer ends with "/" + shorter using
+// component-aware matching. Both paths are normalised to forward slashes.
+//
+// Crucially, shorter must contain at least one "/" (i.e., it must be a
+// multi-component path like "src/pouw.rs"). A bare basename ("pouw.rs")
+// returns false so that single-component filenames fall through to the
+// basename-fallback logic in findCoverage rather than being promoted to a
+// suffix match. This prevents false positives when two coverage entries share
+// a basename but differ in their directory (e.g. "/abs/lib/pouw.rs" vs
+// "/abs/src/pouw.rs") and Function.File is a bare "pouw.rs".
 func hasSuffixPath(longer, shorter string) bool {
 	if shorter == "" || longer == "" {
 		return false
@@ -254,5 +262,11 @@ func hasSuffixPath(longer, shorter string) bool {
 	// Normalise separators.
 	l := filepath.ToSlash(longer)
 	s := filepath.ToSlash(shorter)
+	// Require shorter to be a multi-component path (contains "/").
+	// Single-component basenames are intentionally excluded from suffix matching
+	// and are handled by the basename fallback in findCoverage.
+	if !strings.Contains(s, "/") {
+		return false
+	}
 	return strings.HasSuffix(l, "/"+s)
 }

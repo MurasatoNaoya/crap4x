@@ -534,6 +534,102 @@ func TestCRAP_cc5_zeroCoverage(t *testing.T) {
 // Case 14: AboveThreshold filtering.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Case 15: path matching — absolute lcov SF path vs relative Function.File,
+// mirroring the real bse-consensus scenario where lcov SF: paths are absolute
+// ("/Users/andrewnaoyamcwilliam/repo/bse-consensus/src/pouw.rs") and the
+// analyzed Function.File is relative ("src/pouw.rs"). These must join.
+// ---------------------------------------------------------------------------
+
+func TestCompute_AbsoluteLcovRelativeSource(t *testing.T) {
+	fn := lang.Function{
+		Name:       "verify",
+		File:       "src/pouw.rs", // relative path produced by filepath.Rel(root, abs)
+		Start:      10,
+		End:        20,
+		Complexity: 5,
+	}
+
+	// Coverage keyed by the absolute SF: path as lcov produces it.
+	cov := map[string]map[int]int{
+		"/Users/andrewnaoyamcwilliam/repo/bse-consensus/src/pouw.rs": {
+			10: 3, 11: 1, 12: 1, 13: 0, 14: 1,
+			15: 1, 16: 0, 17: 1, 18: 1, 19: 0, 20: 1,
+		},
+	}
+
+	results := crap.Compute([]lang.Function{fn}, cov)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	if !r.HasCoverage {
+		t.Error("HasCoverage must be true: absolute lcov SF path must join with relative Function.File via suffix match")
+	}
+	// 8 of 11 lines covered (lines 13, 16, 19 are zero).
+	wantCov := 8.0 / 11.0
+	if !almostEqual(r.Coverage, wantCov) {
+		t.Errorf("Coverage: got %.10f, want %.10f (8/11)", r.Coverage, wantCov)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Case 16: component-aware suffix matching — Function.File with multiple path
+// components ("src/pouw.rs") must match an absolute key that ends with that
+// suffix, while a bare basename ("pouw.rs") must NOT be promoted to a suffix
+// match; it should fall through to basename fallback instead. The distinction
+// matters when two coverage entries share a basename but differ in directory,
+// preventing the wrong entry from being selected via suffix.
+// ---------------------------------------------------------------------------
+
+func TestCompute_ComponentAwareSuffixNoFalsePositive(t *testing.T) {
+	// Two functions: one has a multi-component relative file, one has a basename-only file.
+	// Both share the same base name "pouw.rs".
+	fnMulti := lang.Function{
+		Name:       "verify",
+		File:       "src/pouw.rs", // multi-component: must suffix-match /abs/src/pouw.rs
+		Start:      1,
+		End:        5,
+		Complexity: 2,
+	}
+	fnBase := lang.Function{
+		Name:       "helper",
+		File:       "pouw.rs", // basename only: must NOT be promoted to suffix match
+		Start:      1,
+		End:        5,
+		Complexity: 2,
+	}
+
+	// Only one coverage entry — the suffix-specific one.
+	// fnMulti should match it via suffix; fnBase should match it via basename fallback.
+	cov := map[string]map[int]int{
+		"/abs/src/pouw.rs": {1: 1, 2: 1, 3: 0, 4: 1, 5: 0},
+	}
+
+	resultsMulti := crap.Compute([]lang.Function{fnMulti}, cov)
+	if len(resultsMulti) != 1 {
+		t.Fatalf("expected 1 result for fnMulti, got %d", len(resultsMulti))
+	}
+	if !resultsMulti[0].HasCoverage {
+		t.Error("fnMulti (src/pouw.rs): HasCoverage must be true via suffix match")
+	}
+	// 3 of 5 covered.
+	if !almostEqual(resultsMulti[0].Coverage, 3.0/5.0) {
+		t.Errorf("fnMulti Coverage: got %.10f, want %.10f", resultsMulti[0].Coverage, 3.0/5.0)
+	}
+
+	resultsBase := crap.Compute([]lang.Function{fnBase}, cov)
+	if len(resultsBase) != 1 {
+		t.Fatalf("expected 1 result for fnBase, got %d", len(resultsBase))
+	}
+	// fnBase should still find coverage via basename fallback.
+	if !resultsBase[0].HasCoverage {
+		t.Error("fnBase (pouw.rs): HasCoverage must be true via basename fallback")
+	}
+}
+
 func TestAboveThreshold(t *testing.T) {
 	results := []crap.Result{
 		{Func: lang.Function{Name: "low"}, CRAP: 5.0},

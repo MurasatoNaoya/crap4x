@@ -255,6 +255,72 @@ func TestRun_NoCoverage_GoProject(t *testing.T) {
 	}
 }
 
+// TestParseFlags_PathBeforeFlags verifies that the flag parser correctly extracts
+// the positional path argument even when it appears BEFORE the named flags.
+// This is the real user invocation pattern: crap4x /some/path --coverage file.lcov --top 3
+// The standard flag.Parse() stops at the first non-flag argument, so a path-first
+// invocation leaves --coverage, --top, etc. unparsed. The fix uses iterative parsing.
+func TestParseFlags_PathBeforeFlags(t *testing.T) {
+	args := []string{"/some/project", "--coverage", "cover.lcov", "--top", "3", "--lang", "rust"}
+	cfg, err := parseFlags(args)
+	if err != nil {
+		t.Fatalf("parseFlags returned error: %v", err)
+	}
+	if cfg.Path != "/some/project" {
+		t.Errorf("Path: got %q, want %q", cfg.Path, "/some/project")
+	}
+	if cfg.CoverageFile != "cover.lcov" {
+		t.Errorf("CoverageFile: got %q, want %q", cfg.CoverageFile, "cover.lcov")
+	}
+	if cfg.Top != 3 {
+		t.Errorf("Top: got %d, want 3", cfg.Top)
+	}
+	if len(cfg.Langs) != 1 || cfg.Langs[0].String() != "rust" {
+		t.Errorf("Langs: got %v, want [rust]", cfg.Langs)
+	}
+}
+
+// TestParseFlags_FlagsBeforePath verifies that the flag parser also handles the
+// conventional order (flags before positional path).
+func TestParseFlags_FlagsBeforePath(t *testing.T) {
+	args := []string{"--coverage", "cover.lcov", "--top", "5", "/some/project"}
+	cfg, err := parseFlags(args)
+	if err != nil {
+		t.Fatalf("parseFlags returned error: %v", err)
+	}
+	if cfg.Path != "/some/project" {
+		t.Errorf("Path: got %q, want %q", cfg.Path, "/some/project")
+	}
+	if cfg.CoverageFile != "cover.lcov" {
+		t.Errorf("CoverageFile: got %q, want %q", cfg.CoverageFile, "cover.lcov")
+	}
+	if cfg.Top != 5 {
+		t.Errorf("Top: got %d, want 5", cfg.Top)
+	}
+}
+
+// TestRun_TopLimitViaCfg verifies that Run respects cfg.Top and limits printed rows.
+func TestRun_TopLimitViaCfg(t *testing.T) {
+	dir, lcovPath := setupProject(t)
+	var sb strings.Builder
+	code := Run(Config{
+		Path:         dir,
+		CoverageFile: lcovPath,
+		Top:          1, // only the top function should be printed
+	}, &sb)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; output:\n%s", code, sb.String())
+	}
+	out := sb.String()
+	// The highest-CRAP function ("complex") must appear; "simple" must not.
+	if !strings.Contains(out, "complex") {
+		t.Errorf("expected 'complex' in top-1 output; got:\n%s", out)
+	}
+	if strings.Contains(out, "simple") {
+		t.Errorf("'simple' must NOT appear in top-1 output; got:\n%s", out)
+	}
+}
+
 // TestRun_CoverageFileMissing verifies that Run returns exit code 1 and a clear
 // error message when --coverage points to a non-existent file.
 func TestRun_CoverageFileMissing(t *testing.T) {
